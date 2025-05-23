@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Microsoft Cognitive Services Speech SDK JavaScript Quickstart</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="ms-header">
+    <h1>Azure Speech Timer</h1>
+  </div>
+
+  <div id="warning" class="ms-container">
+    <div class="ms-section">
+      <h2 style="color: var(--azure-warning)">Speech Recognition SDK not found</h2>
+      <p>Please ensure that microsoft.cognitiveservices.speech.sdk.bundle.js is properly loaded.</p>
+    </div>
+  </div>
+  
+  <div id="content" class="ms-container" style="display:none">
+    <div class="ms-section">
+      <div class="ms-form-group" style="display: none;">
+        <label for="subscriptionKey">Subscription Key:</label>
+        <input id="subscriptionKey" class="ms-form-control" type="text" value="">
+      </div>
+      <div class="ms-form-group" style="display: none;">
+        <label for="serviceRegion">Region:</label>
+        <input id="serviceRegion" class="ms-form-control" type="text" value="">
+      </div>
+      <div class="ms-form-group">
+        <label>&nbsp;</label>
+        <button id="startRecognizeOnceAsyncButton" class="ms-button">Start recognition</button>
+      </div>
+      <div class="ms-form-group">
+        <label for="phraseDiv">Recognition Results:</label>
+        <textarea id="phraseDiv" class="ms-form-control" readonly></textarea>
+      </div>
+      <div class="ms-form-group">
+        <label for="setTimer">Timer Message:</label>
+        <textarea id="setTimer" class="ms-form-control" readonly></textarea>
+      </div>
+    </div>
+
+    <div class="ms-section timer-container">
+      <h2>Active Timers</h2>
+      <!-- <div class="delete-all-container">
+        <button class="ms-button ms-button-danger" onclick="deleteAllTimers()">Delete All Timers</button>
+      </div> -->
+      <ul class="timer-list" id="timer-list">
+        <!-- Timers will appear here -->
+      </ul>
+    </div>
+  </div>
+
+
+  <script src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
+
+  <script>
+    var phraseDiv;
+    var startRecognizeOnceAsyncButton;
+    var subscriptionKey, serviceRegion;
+    var SpeechSDK;
+    var recognizer;
+    var synthesizer;
+    var audioInputDevices = [];
+    var selectedDeviceId;
+
+    var total_seconds;
+    var message;
+    var index;
+    var timer_names;
+  
+    /**
+     * Performs text-to-speech using Azure Speech SDK
+     * @param {string} text - Text to be converted to speech
+     * @param {object} config - Speech SDK configuration
+     * @param {Function} onComplete - Callback function when speech completes
+     * @param {Function} onError - Callback function when error occurs
+     */
+    function speakText(text, config, onComplete, onError) {
+      if (!text || !text.trim()) {
+        console.warn("No text to synthesize");
+        if (onError) onError(new Error("Empty text provided"));
+        return;
+      }
+
+      const audioConfig = SpeechSDK.AudioConfig.fromDefaultSpeakerOutput();
+      const synth = new SpeechSDK.SpeechSynthesizer(config, audioConfig);
+      
+      // Set output format to WAV for better browser compatibility
+      config.speechSynthesisOutputFormat = 
+        SpeechSDK.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm;
+
+      synth.speakTextAsync(
+        text,
+        function(result) {
+          if (result.reason === SpeechSDK.ResultReason.SynthesizingAudioCompleted) {
+            console.log("Synthesis completed for: " + text);
+            if (onComplete) onComplete(result);
+          } else {
+            console.error("Synthesis failed: " + result.errorDetails);
+            if (onError) onError(new Error(result.errorDetails));
+          }
+          synth.close();
+        },
+        function(err) {
+          console.error("Error in synthesis:", err);
+          if (onError) onError(err);
+          synth.close();
+        }
+      );
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+      startRecognizeOnceAsyncButton = document.getElementById("startRecognizeOnceAsyncButton");
+      subscriptionKey = document.getElementById("subscriptionKey");
+      serviceRegion = document.getElementById("serviceRegion");
+      phraseDiv = document.getElementById("phraseDiv");
+      setTimer = document.getElementById("setTimer");
+  
+      startRecognizeOnceAsyncButton.addEventListener("click", function () {
+        startRecognizeOnceAsyncButton.disabled = true;
+        phraseDiv.innerHTML = "";
+  
+        var speechConfig = SpeechSDK.SpeechConfig.fromSubscription(subscriptionKey.value, serviceRegion.value);
+        speechConfig.speechRecognitionLanguage = "en-US";
+  
+        var audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
+  
+        recognizer = new SpeechSDK.SpeechRecognizer(speechConfig, audioConfig);
+  
+        recognizer.recognizeOnceAsync(
+          function (result) {
+            startRecognizeOnceAsyncButton.disabled = false;
+            phraseDiv.innerHTML += result.text;
+            console.log("Recognition result:", result);
+  
+            fetch('http://127.0.0.1:5000/process_text', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ text: result.text })
+            })
+            .then(response => response.json())
+            .then(data => {
+              console.log("Server response:", data);
+              
+              total_seconds = data.seconds;
+              message = data.timerMessage;
+              console.log("Total seconds:", total_seconds);
+              console.log("Message:", message);
+
+              // With better error handling
+              if (data.index) {
+                  index = data.index;
+                  console.log("Received index data:", index);
+              } else {
+                  console.log("No index data received from backend");
+                  index = [];
+              }
+
+              if (data.timerNames) {
+                  timer_names = data.timerNames;
+                  console.log("Received timer names data:", timer_names);
+              } else {
+                  console.log("No timer names data received from backend");
+                  timer_names = [];
+              }
+              
+              // Update the setTimer textarea with the server's response
+              setTimer.value = data.timerMessage;
+  
+              // Once the setTimer value is updated, initiate text-to-speech
+              let inputText = setTimer.value.trim();
+              if (inputText) {
+                // Using the compact function for text-to-speech
+                speakText(
+                  inputText,
+                  speechConfig,
+                  function(result) {
+                    // Actions after speech completes successfully
+                    if (total_seconds > 0) {
+                      addTimer(total_seconds);
+                    }
+                    
+                    // Delete the newest timer
+                    if (message && message.toLowerCase().includes('cancel')) {
+                      if (timers.length > 0 && index[0] == -1) {
+                        const lastTimerId = timers[timers.length - 1].id;
+                        deleteTimer(lastTimerId);
+                      }
+
+                      if (index.length > 0 && index[0] != -1 && timers.length > 0) {
+                        const sortIndex = [...index].sort((a, b) => a - b);
+                        sortIndex.forEach(idx =>{
+                          if(idx >= 0 && idx < timers.length){
+                            deleteTimer(timers[idx].id);
+                          }
+                        })
+                      }
+
+                      if (timer_names.length > 0 && timers.length > 0) {
+                        try {
+                          // Log intent for Azure diagnostics
+                          console.log("Processing timer deletion by names:", timer_names);
+                          
+                          timer_names.forEach(name => {
+                            let timer = null;
+                            
+                            // Try method 1: Direct domId match
+                            timer = timers.find(t => t.domId === name);
+                            
+                            // Try method 2: Position-based match
+                            if (!timer) {
+                              const timerPosition = parseInt(name) - 1;
+                              if (!isNaN(timerPosition) && timerPosition >= 0 && timerPosition < timers.length) {
+                                console.log(`Found timer by position: ${timerPosition+1}`);
+                                timer = timers[timerPosition];
+                              }
+                            }
+                            
+                            // Try method 3: Extract ID from timer name pattern
+                            if (!timer && typeof name === 'string') {
+                              const domIdMatch = name.match(/timer-(\d+)/);
+                              if (domIdMatch && domIdMatch[1]) {
+                                const idNumber = parseInt(domIdMatch[1]);
+                                timer = timers.find(t => t.id === idNumber);
+                                if (timer) {
+                                  console.log(`Found timer by extracted ID: ${idNumber}`);
+                                }
+                              }
+                            }
+                            
+                            // Delete the timer if found
+                            if (timer) {
+                              console.log(`Deleting timer: ${timer.domId} with ID: ${timer.id}`);
+                              deleteTimer(timer.id);
+                            } else {
+                              console.warn(`Timer not found with identifier: "${name}"`);
+                              
+                              // Azure best practice: Show all available timers for debugging
+                              if (timers.length > 0) {
+                                console.log("Available timers:", timers.map(t => ({id: t.id, domId: t.domId})));
+                              }
+                            }
+                          });
+                        } catch (error) {
+                          console.error("Error deleting timers by name:", error);
+                        }
+                      }
+                    }
+                    // Delete all timers
+                    const words = ['all', 'every'];
+                    if (message && words.some(word => message.toLowerCase().includes(word))) {
+                      deleteAllTimers();
+                    }
+
+                    if(index.length > 0 || timer_names.length > 0){
+                      
+                    }
+                  },
+                  function(error) {
+                    console.error("Speech synthesis error:", error);
+                  }
+                );
+              } else {
+                console.log("No valid text to synthesize.");
+              }
+            })
+            .catch(error => {
+              console.error("Error:", error);
+            });
+  
+            recognizer.close();
+            recognizer = undefined;
+          },
+          function (err) {
+            startRecognizeOnceAsyncButton.disabled = false;
+            phraseDiv.innerHTML += "Error: " + err;
+            console.error("Recognition error:", err);
+  
+            recognizer.close();
+            recognizer = undefined;
+          }
+        );
+      });
+  
+      if (!!window.SpeechSDK) {
+        SpeechSDK = window.SpeechSDK;
+        startRecognizeOnceAsyncButton.disabled = false;
+  
+        document.getElementById("content").style.display = "block";
+        document.getElementById("warning").style.display = "none";
+      }
+    });
+    
+    // Timer management with Azure best practices for reliable client applications
+    let timerId = 0;
+    const timers = []; // Keep track of timers and their intervals
+
+    // Function to add a new timer to the list
+    function addTimer(timeInSeconds) {
+      if (isNaN(timeInSeconds) || timeInSeconds <= 0) {
+        console.error("Invalid timer value:", timeInSeconds);
+        return;
+      }
+
+      // Create a unique ID for this timer
+      const newTimerId = timerId++;
+      
+      // Create a new timer item in the list
+      const timerItem = document.createElement('li');
+      timerItem.classList.add('timer-item');
+      timerItem.setAttribute('id', `timer-${newTimerId}`);
+
+      const minutes = Math.floor(timeInSeconds / 60);
+      const seconds = timeInSeconds % 60;
+
+      timerItem.innerHTML = `
+          <div>
+              <h3>Timer ${newTimerId + 1}</h3>
+              <div class="time" id="time-${newTimerId}">${pad(minutes)}:${pad(seconds)}</div>
+          </div>
+      `;
+
+      document.getElementById('timer-list').appendChild(timerItem);
+      
+      // Create timer object with all necessary data
+      const timerObject = { 
+          id: newTimerId, 
+          interval: null, 
+          time: timeInSeconds,
+          domId: `timer-${newTimerId}`,
+          timeDisplayId: `time-${newTimerId}`
+      };
+      
+      // Save timer data
+      timers.push(timerObject);
+
+      // Start the timer immediately after adding it
+      startTimer(newTimerId);
+      
+      return newTimerId;
+    }
+
+    // Function to start the timer
+    function startTimer(id) {
+      // Find timer by ID (not by index)
+      const timer = timers.find(t => t.id === id);
+      if (!timer) {
+          console.error("Timer not found:", id);
+          return;
+      }
+
+      if (timer.interval) {
+          console.warn("Timer already running:", id);
+          return; // Timer is already running
+      }
+
+      // Closure to capture the timer's ID
+      timer.interval = setInterval(() => {
+          if (timer.time > 0) {
+              timer.time--;
+              
+              // Get the display element by ID, not by index
+              const displayElement = document.getElementById(timer.timeDisplayId);
+              if (displayElement) {
+                  let minutes = Math.floor(timer.time / 60);
+                  let seconds = timer.time % 60;
+                  displayElement.textContent = `${pad(minutes)}:${pad(seconds)}`;
+              } else {
+                  console.warn(`Display element not found: ${timer.timeDisplayId}`);
+              }
+          } else {
+              clearInterval(timer.interval);
+              timer.interval = null;
+              const announcement = `Timer ${id + 1} has ended!`;
+
+              const subKey = document.getElementById("subscriptionKey").value;
+              const region = document.getElementById("serviceRegion").value;
+
+              if(typeof SpeechSDK !== 'undefined'){
+                  try {
+                      // Create a speech config specifically for this timer announcement
+                      let timerSpeechConfig = SpeechSDK.SpeechConfig.fromSubscription(subKey, region);
+                      
+                      // Use the compact function for timer expiration announcement
+                      speakText(
+                        announcement,
+                        timerSpeechConfig,
+                        function() {
+                          // Delete the timer after announcement completes
+                          deleteTimer(id);
+                        },
+                        function(error) {
+                          console.error("Timer announcement error:", error);
+                        }
+                      );
+                  } catch (error) {
+                      console.error("Error in text-to-speech:", error);
+                  }
+              }
+          }
+      }, 1000);
+    }
+
+    // Function to delete timer - improved with proper error handling
+    function deleteTimer(id) {
+      // Find timer by ID in the array
+      const timerIndex = timers.findIndex(t => t.id === id);
+      
+      if (timerIndex === -1) {
+          console.error("Timer not found for deletion:", id);
+          return;
+      }
+      
+      // Get the timer object
+      const timer = timers[timerIndex];
+      
+      // Get the DOM element
+      const timerItem = document.getElementById(timer.domId);
+      
+      // Stop the timer if it is running
+      if (timer.interval) {
+          clearInterval(timer.interval);
+          timer.interval = null;
+      }
+      
+      // Remove from the array - maintain proper array integrity
+      timers.splice(timerIndex, 1);
+      
+      // Remove from the DOM if element exists
+      if (timerItem) {
+          timerItem.remove();
+      } else {
+          console.warn(`Timer DOM element not found: ${timer.domId}`);
+      }
+      
+      console.log("Timer deleted:", id);
+    }
+
+    // Function to delete all timers
+    function deleteAllTimers() {
+      // Stop all running timers first
+      timers.forEach(timer => {
+          if (timer.interval) {
+              clearInterval(timer.interval);
+              timer.interval = null;
+          }
+      });
+      
+      // Clear the DOM
+      const timerList = document.getElementById('timer-list');
+      if (timerList) {
+          timerList.innerHTML = '';
+      }
+      
+      timers.length = 0; // Clear the timers array
+      timerId = 0; // Reset the timer ID for new timers
+      
+      console.log("All timers deleted");
+    }
+
+    // Helper function to pad time to always show 2 digits
+    function pad(value) {
+        return value < 10 ? '0' + value : value;
+    }
+  </script>
+</body>
+</html>
